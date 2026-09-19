@@ -1,0 +1,28 @@
+# Ingestion & parsing
+pymupdf
+pdfplumber
+
+# RAG / vector store
+chromadb
+langchain
+langchain-community
+sentence-transformers
+
+# LLM (Groq)
+groq
+
+# API & interface
+fastapi
+uvicorn[standard]
+streamlit
+pydantic
+python-dotenv
+
+# MCP (API v2 : FastMCP renommé MCPServer, voir src/mcp/server.py)
+mcp>=2.0
+
+# Evaluation
+pandas
+
+# Tests / dev
+reportlab  # génère le PDF d'exemple dans tests/make_sample_pdf.py
