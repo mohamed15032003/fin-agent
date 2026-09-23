@@ -3,4 +3,10 @@ __pycache__/
 *.pyc
 .env
 data/processed/
-data/raw/*.pdf
+
+# Secrets Streamlit (voir .streamlit/secrets.toml.example pour la structure attendue)
+.streamlit/secrets.toml
+
+# Rapports de sprint Claude Code (documentation interne, pas du projet)
+rapport_sprint*.md
+rapport_etat_projet.md

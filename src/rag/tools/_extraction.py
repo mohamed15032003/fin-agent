@@ -59,12 +59,20 @@ def parse_chunks(context: str) -> list[Chunk]:
 # d'abord) pour éviter qu'un libellé générique n'avale un libellé précis.
 LABEL_PATTERNS: dict[str, str] = {
     "dette_financiere": r"dettes?\s+financi[eè]res?(?:\s+nettes?)?",
-    "chiffre_affaires": r"chiffre\s+d['’]affaires",
-    "resultat_net": r"r[ée]sultat\s+net",
-    "capitaux_propres": r"capitaux\s+propres",
-    "total_bilan": r"total\s+(?:du\s+bilan|(?:de\s+l['’])?actif)",
-    "actif_circulant": r"actifs?\s+circulants?",
-    "passif_circulant": r"passifs?\s+circulants?|dettes?\s+(?:à|a)\s+court\s+terme",
+    # "Total des produits d'exploitation" : libellé usuel du SCF tunisien, notamment
+    # pour une holding (dividendes + management fees) qui n'a pas de "chiffre d'affaires".
+    "chiffre_affaires": r"chiffre\s+d['’]affaires|total\s+des\s+produits\s+d['’]exploitation",
+    # "Résultat de l'exercice" : idem, libellé courant des états financiers tunisiens.
+    "resultat_net": r"r[ée]sultat\s+net|(?<!avant )r[ée]sultat\s+de\s+l['’]exercice",
+    # Exclut "CAPITAUX PROPRES ET PASSIFS" (= total du bilan, pas les fonds propres)
+    # et le sous-total "AVANT RESULTAT" (fonds propres hors résultat de l'exercice).
+    "capitaux_propres": r"capitaux\s+propres(?!\s+et\s+passifs)(?!\s+avant\s+r[ée]sultat)",
+    "total_bilan": r"total\s+(?:du\s+bilan|(?:des?\s+|de\s+l['’])?actifs?\b(?!\s+(?:non\s+)?courants?))",
+    # SCF tunisien : "TOTAL DES ACTIFS/PASSIFS COURANTS" (et non "circulants"). On exige
+    # le "total" : une ligne "Autres actifs/passifs courants" n'est qu'une partie du
+    # total, la prendre donnerait un ratio de liquidité faux (21x au lieu de ~30x).
+    "actif_circulant": r"total\s+des\s+actifs?\s+courants?|actifs?\s+circulants?",
+    "passif_circulant": r"total\s+des\s+passifs?\s+courants?|passifs?\s+circulants?|dettes?\s+(?:à|a)\s+court\s+terme",
 }
 
 # Libellé lisible pour l'affichage des résultats.
@@ -94,6 +102,23 @@ _NUMBER_RE = (
 # plausible, est presque toujours une date ("exercice 2025") et non une
 # valeur financière — on l'ignore pour éviter de la prendre comme montant.
 _YEAR_RE = re.compile(r"^(19|20)\d{2}$")
+
+
+_NOTE_REF_PREFIX_RE = re.compile(r"[A-Za-z]-$")  # "B-8", "R-1" (renvoi à une note)
+_DATE_WORD_PREFIX_RE = re.compile(r"\b(?:au|le|note)\s+$", re.IGNORECASE)  # "au 31", "Note 31"
+
+
+def _is_date_or_note_ref(snippet: str, match: re.Match) -> bool:
+    """Vrai si le nombre est un morceau de date ("31/12/2024") ou un renvoi de
+    note ("B-8"), donc pas un montant. Sans ça, "CAPITAUX PROPRES ... Note
+    31/12/2024" donnait des capitaux propres de 31 dinars (ROE aberrant)."""
+    before = snippet[max(0, match.start() - 2) : match.start()]
+    after = snippet[match.end() : match.end() + 1]
+    if after == "/" or before.endswith("/"):
+        return True
+    if _NOTE_REF_PREFIX_RE.search(before):
+        return True
+    return bool(_DATE_WORD_PREFIX_RE.search(snippet[: match.start()]))
 
 
 def _is_year_like(match: re.Match) -> bool:
@@ -154,13 +179,49 @@ def _best_number_in_snippet(snippet: str) -> re.Match | None:
     for number_match in re.finditer(_NUMBER_RE, snippet, re.IGNORECASE):
         if _parse_number(number_match) is None:
             continue
-        if _is_year_like(number_match):
+        if _is_year_like(number_match) or _is_date_or_note_ref(snippet, number_match):
             continue
         if number_match.group("magnitude") or number_match.group("currency"):
             return number_match
         if fallback is None:
             fallback = number_match
     return fallback
+
+
+_WORD_START_RE = re.compile(r"[A-Za-zÀ-ÿ]{3,}")
+
+
+def _is_heading_only(text: str, end: int) -> bool:
+    """Vrai si le libellé termine sa ligne et que la ligne suivante commence par
+    un mot (ex: "CAPITAUX PROPRES" suivi de "Immobilisations incorporelles ..."):
+    c'est un titre de section, et le nombre qui suit appartient à une autre ligne."""
+    rest = text[end:]
+    first_line_end = rest.find("\n")
+    if first_line_end == -1 or rest[:first_line_end].strip():
+        return False  # texte sur la même ligne, ou fin du chunk : on garde
+    for line in rest[first_line_end + 1 :].split("\n"):
+        line = line.strip()
+        if not line or _NOTE_REF_LINE_RE.match(line):
+            continue
+        return bool(_WORD_START_RE.match(line))
+    return False
+
+
+_NOTE_REF_LINE_RE = re.compile(r"^[A-Za-z]-\d+$|^note$", re.IGNORECASE)
+
+
+_DATE_YEAR_RE = re.compile(r"\b\d{1,2}/\d{1,2}/((?:19|20)\d{2})\b")
+
+
+def _is_prior_period(chunk_text: str, matched_span: str) -> bool:
+    """Vrai si la valeur est rattachée à une date d'exercice antérieure à la plus
+    récente du chunk (colonne N-1 : "au 31/12/2023" à côté de "au 31/12/2024").
+    Sans ça, le résultat 2023 était signalé comme incohérent avec celui de 2024."""
+    years_in_span = [int(y) for y in _DATE_YEAR_RE.findall(matched_span)]
+    if not years_in_span:
+        return False
+    latest = max(int(y) for y in _DATE_YEAR_RE.findall(chunk_text))
+    return max(years_in_span) < latest
 
 
 def extract_labeled_values(chunk: Chunk, window: int = 100) -> list[ExtractedValue]:
@@ -171,6 +232,8 @@ def extract_labeled_values(chunk: Chunk, window: int = 100) -> list[ExtractedVal
 
     for label, label_pattern in LABEL_PATTERNS.items():
         for label_match in re.finditer(label_pattern, text, re.IGNORECASE):
+            if _is_heading_only(text, label_match.end()):
+                continue
             window_start = label_match.end()
             snippet = text[window_start : window_start + window]
             number_match = _best_number_in_snippet(snippet)
@@ -178,6 +241,8 @@ def extract_labeled_values(chunk: Chunk, window: int = 100) -> list[ExtractedVal
                 continue
             value = _parse_number(number_match)
             if value is None:
+                continue
+            if _is_prior_period(text, snippet[: number_match.end()]):
                 continue
             raw = (label_match.group(0) + snippet[: number_match.end()]).strip()
             raw = " ".join(raw.split())  # normalise les espaces/retours à la ligne

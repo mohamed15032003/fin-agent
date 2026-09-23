@@ -34,22 +34,19 @@ def get_relevant_context(query: str) -> str:
 @mcp.tool()
 def financial_ratios(query: str) -> str:
     """Calcule les ratios financiers pertinents pour la requête donnée."""
-    context = get_relevant_context(query)
-    return compute_ratios(context)
+    return compute_ratios.invoke(query)
 
 
 @mcp.tool()
 def inconsistency_check(query: str) -> str:
     """Détecte des incohérences chiffrées dans les rapports liés à la requête."""
-    context = get_relevant_context(query)
-    return detect_inconsistencies(context)
+    return detect_inconsistencies.invoke(query)
 
 
 @mcp.tool()
 def risk_summary(query: str) -> str:
     """Résume les facteurs de risque liés à la requête donnée."""
-    context = get_relevant_context(query)
-    return summarize_risks(context)
+    return summarize_risks.invoke(query)
 
 
 if __name__ == "__main__":

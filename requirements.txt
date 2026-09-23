@@ -10,6 +10,7 @@ sentence-transformers
 
 # LLM (Groq)
 groq
+langchain-groq  # ChatGroq pour l'agent LangChain (create_agent), voir src/rag/agent.py
 
 # API & interface
 fastapi

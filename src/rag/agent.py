@@ -1,64 +1,56 @@
 """
-Agent orchestrateur : reçoit une question, récupère le contexte pertinent (RAG),
-décide s'il doit appeler un outil spécialisé (ratios, incohérences, résumé de
-risques), puis génère une réponse via l'API Groq.
+Agent orchestrateur : reçoit une question et la transmet à un agent LangChain
+(create_agent) qui décide, via le tool-calling natif du modèle Groq, quel
+outil appeler (ratios, incohérences, résumé de risques, ou recherche de
+contexte générale) avant de produire une réponse.
 
-TODO (semaine 2-3): remplacer cette boucle simple par un vrai agent LangChain
-(AgentExecutor + tool calling natif de Groq/Llama) une fois le RAG de base validé.
+Aucun contexte n'est pré-injecté ici : c'est aux tools d'aller chercher
+eux-mêmes le contexte pertinent (chacun fait son propre retrieve()). Une
+pré-injection systématique d'un contexte non filtré empêchait l'agent
+d'utiliser le paramètre `company` des tools quand un document plus petit
+était noyé par un autre plus volumineux dans les résultats bruts.
 """
 
 import os
-import unicodedata
 
-from groq import Groq
+from langchain.agents import create_agent
+from langchain_groq import ChatGroq
 
-from src.rag.retriever import retrieve
 from src.rag.tools.ratios import compute_ratios
 from src.rag.tools.inconsistency_detector import detect_inconsistencies
 from src.rag.tools.risk_summarizer import summarize_risks
+from src.rag.tools.context import get_context
 
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 # llama-3.3-70b-versatile a ete retire par Groq le 16 aout 2026 ; remplacement
 # officiellement recommande par Groq (voir console.groq.com/docs/deprecations).
 MODEL = "openai/gpt-oss-120b"
 
 SYSTEM_PROMPT = """Tu es un assistant d'analyse financière. Réponds uniquement
-à partir du contexte fourni, extrait de rapports financiers. Si l'information
-n'est pas dans le contexte, dis-le clairement plutôt que d'inventer."""
+à partir des rapports financiers indexés, jamais de connaissances générales.
+Si l'information n'est pas trouvée par les outils, dis-le clairement plutôt
+que d'inventer.
 
-# TODO (semaine 3): remplacer ce routage par mots-clés par un vrai tool-calling
-# structuré (function calling) supporté par l'API Groq.
-TOOLS = {
-    "ratios": compute_ratios,
-    "incoherences": detect_inconsistencies,  # comparé à la question sans accents, voir _normalize()
-    "risques": summarize_risks,
-}
+Tu n'as accès à aucun contexte au départ : tu dois systématiquement appeler
+un outil pour aller chercher l'information dont tu as besoin. Utilise les
+outils spécialisés (ratios financiers, incohérences chiffrées, résumé des
+facteurs de risque) quand la question s'y prête ; sinon utilise l'outil
+général de recherche de contexte. Si la question mentionne un nom
+d'entreprise ou de société précis, renseigne le paramètre company de
+l'outil choisi pour restreindre la recherche au rapport de cette seule
+entreprise."""
 
+_model = ChatGroq(model=MODEL, api_key=os.environ.get("GROQ_API_KEY"))
 
-def _normalize(text: str) -> str:
-    """Minuscules + accents retirés, pour que le routage par mots-clés marche
-    que la question contienne "incohérences" ou "incoherences"."""
-    decomposed = unicodedata.normalize("NFKD", text.lower())
-    return "".join(c for c in decomposed if not unicodedata.combining(c))
+_agent = create_agent(
+    model=_model,
+    tools=[compute_ratios, detect_inconsistencies, summarize_risks, get_context],
+    system_prompt=SYSTEM_PROMPT,
+)
 
 
 def answer(question: str) -> str:
-    hits = retrieve(question)
-    context = "\n\n".join(f"[{h['source']} p.{h['page']}] {h['text']}" for h in hits)
-
-    normalized_question = _normalize(question)
-    for keyword, tool_fn in TOOLS.items():
-        if keyword in normalized_question:
-            return tool_fn(context)
-
-    completion = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Contexte:\n{context}\n\nQuestion: {question}"},
-        ],
-    )
-    return completion.choices[0].message.content
+    result = _agent.invoke({"messages": [{"role": "user", "content": question}]})
+    return result["messages"][-1].content
 
 
 if __name__ == "__main__":

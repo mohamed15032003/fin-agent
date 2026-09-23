@@ -13,7 +13,10 @@ valeur trouvée et le signale — ne pas se fier aveuglément au ratio dans ce
 cas, vérifier d'abord la cohérence des données sources.
 """
 
-from src.rag.tools._extraction import cite, extract_all, group_by_label, parse_chunks
+from langchain_core.tools import tool
+
+from src.rag.retriever import retrieve
+from src.rag.tools._extraction import LABEL_DISPLAY, cite, extract_all, group_by_label, parse_chunks
 
 # Chaque ratio: (nom affiché, formule texte, labels requis, fonction de calcul)
 _RATIO_DEFINITIONS = [
@@ -48,7 +51,45 @@ _RATIO_DEFINITIONS = [
 ]
 
 
-def compute_ratios(context: str) -> str:
+@tool
+def compute_ratios(query: str, company: str = "") -> str:
+    """Calcule les ratios financiers (marge nette, ROE, endettement,
+    liquidité générale) à partir des rapports financiers indexés.
+    Utilise cet outil quand la question porte sur des ratios,
+    la rentabilité, l'endettement ou la solvabilité.
+
+    Si la question mentionne un nom d'entreprise ou de société précis
+    (ex: "Délice Holding", "Société Exemple SA"), renseigne le paramètre
+    company avec ce nom pour restreindre l'analyse au rapport de cette
+    seule entreprise. Laisse vide si la question ne cible aucune
+    entreprise en particulier."""
+    # Même logique que detect_inconsistencies (voir ce fichier et
+    # rapport_sprint6.md) : ce tool sait déjà PRÉCISÉMENT quels libellés
+    # financiers il doit trouver (voir _RATIO_DEFINITIONS ci-dessus et
+    # LABEL_DISPLAY dans _extraction.py) — un unique retrieve(query, ...)
+    # sur le texte libre de la question de l'utilisateur est donc la
+    # mauvaise stratégie de recherche. On fait un retrieve() ciblé par
+    # libellé connu (son nom affiché en français), avec un k plus petit
+    # par appel puisque chaque requête est maintenant précise, puis on
+    # fusionne les chunks récupérés en évitant les doublons. `query` n'est
+    # donc plus utilisée pour le retrieve lui-même ; seul `company` reste
+    # utile, pour restreindre chaque recherche par libellé à la bonne
+    # source.
+    source_filter = company if company else None
+    seen: set[tuple] = set()
+    hits = []
+    for display_name in LABEL_DISPLAY.values():
+        for h in retrieve(display_name, k=5, source_filter=source_filter):
+            key = (h["source"], h["page"], h["text"])
+            if key not in seen:
+                seen.add(key)
+                hits.append(h)
+
+    if company and not hits:
+        return f"Aucun rapport trouvé pour l'entreprise '{company}' dans les documents indexés."
+
+    context = "\n\n".join(f"[{h['source']} p.{h['page']}] {h['text']}" for h in hits)
+
     chunks = parse_chunks(context)
     values = extract_all(chunks)
     grouped = group_by_label(values)

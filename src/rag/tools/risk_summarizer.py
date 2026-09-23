@@ -7,6 +7,9 @@ import os
 
 from dotenv import load_dotenv
 from groq import Groq
+from langchain_core.tools import tool
+
+from src.rag.retriever import retrieve
 
 # Charge les variables du fichier .env (GROQ_API_KEY) dans l'environnement.
 # Sans ca, .env peut exister et contenir la bonne cle sans que
@@ -19,7 +22,24 @@ client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 MODEL = "openai/gpt-oss-120b"
 
 
-def summarize_risks(context: str) -> str:
+@tool
+def summarize_risks(query: str, company: str = "") -> str:
+    """Résume les principaux facteurs de risque mentionnés dans les
+    rapports financiers indexés (section "Facteurs de risque" / "Risk
+    Factors"). Utilise cet outil quand la question porte sur les risques,
+    dangers ou menaces pesant sur l'entreprise.
+
+    Si la question mentionne un nom d'entreprise ou de société précis
+    (ex: "Délice Holding", "Société Exemple SA"), renseigne le paramètre
+    company avec ce nom pour restreindre l'analyse au rapport de cette
+    seule entreprise. Laisse vide si la question ne cible aucune
+    entreprise en particulier."""
+    hits = retrieve(query, source_filter=company if company else None)
+    if company and not hits:
+        return f"Aucun rapport trouvé pour l'entreprise '{company}' dans les documents indexés."
+
+    context = "\n\n".join(f"[{h['source']} p.{h['page']}] {h['text']}" for h in hits)
+
     completion = client.chat.completions.create(
         model=MODEL,
         messages=[
