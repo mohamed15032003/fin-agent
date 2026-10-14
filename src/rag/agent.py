@@ -37,7 +37,12 @@ facteurs de risque) quand la question s'y prête ; sinon utilise l'outil
 général de recherche de contexte. Si la question mentionne un nom
 d'entreprise ou de société précis, renseigne le paramètre company de
 l'outil choisi pour restreindre la recherche au rapport de cette seule
-entreprise."""
+entreprise.
+
+Devise : reprends la devise exactement comme elle apparaît dans le rapport.
+Les sociétés cotées à la Bourse de Tunis (BVMT) publient en dinars tunisiens :
+écris « dinars » ou « TND », jamais « DZD » (dinar algérien) ni une autre
+devise que le rapport ne mentionne pas."""
 
 _model = ChatGroq(model=MODEL, api_key=os.environ.get("GROQ_API_KEY"))
 
