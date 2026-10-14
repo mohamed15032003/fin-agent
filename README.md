@@ -5,6 +5,8 @@ FinAgent répond à des questions sur des rapports financiers publics (rapports 
 **Démo en ligne :** [ouvrir FinAgent sur Streamlit](https://fin-agent-afbig5pchzesc8cuea4pws.streamlit.app/)
 (hébergée sur la version gratuite de Streamlit : si l'app est en veille, le premier chargement prend une trentaine de secondes)
 
+![Démo de FinAgent : ratios financiers de Délice Holding 2024](docs/demo.png)
+
 ---
 
 ## Ce qu'on peut lui demander
@@ -57,8 +59,8 @@ Python · LangChain (`create_agent`) · Groq (`openai/gpt-oss-120b`) · ChromaDB
 ## Lancer le projet en local
 
 ```bash
-git clone https://github.com/mohamed15032003/NOM-DU-DEPOT.git
-cd NOM-DU-DEPOT
+git clone https://github.com/mohamed15032003/fin-agent.git
+cd fin-agent
 python -m venv venv
 venv\Scripts\activate        # Linux / macOS : source venv/bin/activate
 pip install -r requirements.txt
