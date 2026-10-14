@@ -1,161 +1,96 @@
-# FinAgent — Agent IA pour l'Analyse de Documents Financiers
+# FinAgent — un agent IA pour lire des rapports financiers
 
-> Agent IA basé sur une architecture **RAG (Retrieval-Augmented Generation)** pour l'analyse automatisée de rapports financiers publics (rapports annuels BVMT, 10-K) : extraction de données, détection d'incohérences, calcul de ratios financiers et résumé des facteurs de risque — avec une couche **Model Context Protocol (MCP)** pour une intégration standardisée.
+FinAgent répond à des questions sur des rapports financiers publics (rapports annuels de sociétés cotées à la BVMT, 10-K…). Il retrouve les passages utiles du document, calcule des ratios, repère les chiffres incohérents entre deux pages et résume les facteurs de risque, en citant à chaque fois la source et la page.
+
+**Démo en ligne :** [ouvrir FinAgent sur Streamlit](https://fin-agent-afbig5pchzesc8cuea4pws.streamlit.app/)
+(hébergée sur la version gratuite de Streamlit : si l'app est en veille, le premier chargement prend une trentaine de secondes)
+
+---
+
+## Ce qu'on peut lui demander
+
+- **Une question libre** sur un rapport : *« Quel est le résultat net de l'exercice ? »*
+- **Les ratios financiers** : marge nette, ROE, taux d'endettement, liquidité générale
+- **Les incohérences** : un même chiffre qui ne vaut pas la même chose à deux endroits du rapport
+- **Les facteurs de risque**, résumés en quelques points avec la page source
+- **Un filtre par entreprise** : quand la question cite une société, l'agent ne cherche que dans son rapport
+
+## Exemple
+
+Sur le rapport annuel 2024 de **Délice Holding** :
+
+> **Question :** Quel est le résultat net de l'exercice ?
 >
-> Projet inspiré des initiatives GenAI actuelles des Big Four dans l'audit augmenté par IA ([EY.ai](https://chatfin.ai/blog/big-4-ai-agents-ey-kpmg-deloitte-pwc-finance-teams-2026/), PwC GL.ai / ChatPwC).
+> **Réponse :** Résultat net 2024 : 58 901 016 dinars (2023 : 34 430 924 dinars), avec la page du rapport d'où vient le chiffre.
 
-## Sommaire
+Les ratios et les risques sont rendus sous forme de tableaux, chaque ligne renvoyant au document et à la page utilisés.
 
-- [Fonctionnalités](#fonctionnalités)
-- [Architecture](#architecture)
-- [Stack technique](#stack-technique)
-- [Installation](#installation)
-- [Utilisation](#utilisation)
-- [Roadmap](#roadmap)
-- [Évaluation](#évaluation)
+## Comment ça marche
 
-## Statut de validation (mise à jour semaine 3)
+```
+Rapports PDF
+     │
+     ▼
+Extraction du texte (PyMuPDF) ─► Découpage en morceaux ─► Embeddings ─► ChromaDB
+                                                                          │
+                                                                          ▼
+                                   Agent LangChain (tool-calling via Groq)
+                                                  │
+              ┌──────────────────┬────────────────┼──────────────────┐
+              ▼                  ▼                ▼                  ▼
+      Recherche de       Ratios financiers   Incohérences       Résumé des
+        contexte          (calcul Python)   (calcul Python)    risques (LLM)
+                                                  │
+                                                  ▼
+                          Interface Streamlit · API FastAPI · Serveur MCP
+```
 
-Ce qui a été testé et fonctionne réellement (pas juste écrit) :
+- **L'agent choisit lui-même son outil.** Il n'a aucun contexte au départ : il appelle l'outil adapté à la question, et chaque outil va chercher ses propres passages dans ChromaDB.
+- **Les ratios et les incohérences sont calculés en Python, pas par le LLM.** Les montants sont extraits du texte par des expressions régulières (formats français et anglais, millions et milliers, colonne N-1…). Le résultat est donc vérifiable, et si une donnée manque, l'outil le dit au lieu d'inventer un chiffre.
+- **Seul le résumé des risques** et la mise en forme de la réponse passent par le LLM.
+- **Les mêmes outils sont exposés via un serveur MCP**, ce qui permet de les brancher sur d'autres clients compatibles.
 
-- ✅ Parsing PDF (`pdf_parser.py`) — extrait correctement le texte page par page.
-- ✅ Chunking (`chunker.py`) — découpe le texte en chunks avec métadonnées.
-- ✅ Mécanique ChromaDB (add / persist / query) — validée avec un embedding factice.
-- ✅ Tous les modules s'importent sans déclencher d'appel réseau caché (le chargement du modèle d'embeddings est maintenant paresseux, voir `get_embedding_fn()` dans `indexer.py`/`retriever.py`).
-- ✅ L'API FastAPI démarre et répond sur `/health`.
-- ✅ Outil ratios financiers (`ratios.py`) — implémenté (extraction par regex + calcul), testé sur le rapport d'exemple : marge nette, ROE et ratio d'endettement corrects ; signale proprement les ratios non calculables (donnée absente) plutôt que d'inventer un chiffre.
-- ✅ Outil détection d'incohérences (`inconsistency_detector.py`) — implémenté, testé : détecte bien l'écart volontaire chiffre d'affaires 45,2 vs 45,3 millions entre la page 1 et la page 2 du rapport d'exemple, sans faux positif sur les valeurs identiques (résultat net).
-- ✅ Outil résumé de risques (`risk_summarizer.py`) — déjà implémenté (appel direct à l'API Groq), pas encore testé avec une vraie clé API.
-- ✅ Serveur MCP (`mcp/server.py`) — était déjà écrit mais utilisait l'ancienne API v1 du SDK (`FastMCP`) alors que `pip install` installe la v2 ; le SDK a renommé `FastMCP` en `MCPServer` (déplacé vers `mcp.server.mcpserver`), ce qui cassait l'import. Corrigé + requirements.txt épinglé sur `mcp>=2.0`. Les imports sont validés, l'appel réel des tools MCP (nécessite Groq) reste à tester.
+## Stack
 
-Ce qui n'a **toujours pas** pu être testé depuis les environnements de développement utilisés jusqu'ici (réseau restreint des deux côtés), à tester toi-même :
+Python · LangChain (`create_agent`) · Groq (`openai/gpt-oss-120b`) · ChromaDB · sentence-transformers (`all-MiniLM-L6-v2`) · PyMuPDF · Streamlit · FastAPI · MCP
 
-- Le téléchargement du modèle d'embeddings `all-MiniLM-L6-v2` depuis huggingface.co (nécessite juste une connexion internet normale — devrait fonctionner sans problème depuis ta machine).
-- Le téléchargement des rapports BVMT (`download_samples.py`) — l'URL est bonne (trouvée sur le site officiel), mais si `bvmt.com.tn` bloque encore après ça, utilise en attendant `tests/make_sample_pdf.py` (génère un faux rapport de test) ou une des sources de secours (SEC EDGAR, Kaggle) listées plus bas.
-- L'appel réel à l'API Groq, donc `agent.py`, `risk_summarizer.py` et le routage par mots-clés bout en bout (nécessite ta clé dans `.env`) — **c'est le prochain test à faire en priorité**, tout le reste en dépend (semaine 2 du planning initial, toujours pas franchie faute de réseau des deux côtés).
-
-Pour démarrer immédiatement sans attendre d'avoir résolu l'accès aux données :
+## Lancer le projet en local
 
 ```bash
-python tests/make_sample_pdf.py   # génère data/raw/exemple_rapport_test.pdf
-python -m src.ingestion.indexer   # indexe ce PDF de test
-python -m src.rag.retriever "risque de change"   # teste la recherche
-
-# une fois GROQ_API_KEY renseignée dans .env :
-python -m src.rag.agent "quels sont les ratios financiers ?"
-python -m src.rag.agent "y a-t-il des incoherences dans le rapport ?"
-```
-
-## Fonctionnalités
-
-- [x] Ingestion et parsing de rapports financiers PDF
-- [x] Indexation vectorielle (RAG) pour la recherche sémantique dans les documents — mécanique validée, modèle d'embeddings pas encore téléchargé en conditions réelles
-- [ ] Question-réponse sur le contenu d'un rapport — code écrit (`agent.py`), pas encore testé avec une vraie clé Groq
-- [x] Calcul automatique de ratios financiers clés
-- [x] Détection d'incohérences chiffrées entre sections d'un même rapport
-- [x] Résumé des facteurs de risque identifiés — code écrit, pas encore testé avec une vraie clé Groq
-- [x] Exposition des outils de l'agent via un serveur MCP — implémenté (`mcp/server.py`), imports vérifiés
-- [ ] Interface web simple pour la démo
-
-## Architecture
-
-```
-Documents PDF (BVMT / 10-K)
-        │
-        ▼
-  Ingestion & parsing  ──►  Chunking & embeddings  ──►  ChromaDB (index vectoriel)
-                                                              │
-                                                              ▼
-                                                     Agent orchestrateur (LangChain + Groq LLM)
-                                                              │
-                                    ┌─────────────────────────┼─────────────────────────┐
-                                    ▼                         ▼                         ▼
-                          Outil: ratios financiers   Outil: détection          Outil: résumé
-                                                      d'incohérences            de risques
-                                                              │
-                                                              ▼
-                                                     Serveur MCP (expose les outils)
-                                                              │
-                                                              ▼
-                                                   API FastAPI ──► Interface (Streamlit/React)
-```
-
-## Stack technique
-
-| Composant | Technologie |
-|---|---|
-| Parsing PDF | PyMuPDF / pdfplumber |
-| Embeddings & vector store | ChromaDB |
-| Orchestration agent | LangChain |
-| LLM | API Groq (llama-3.3-70b-versatile) |
-| Backend | FastAPI |
-| Interface | Streamlit (MVP) → React/TypeScript (évolution) |
-| Protocole d'intégration | Model Context Protocol (MCP) |
-
-## Installation
-
-```bash
-git clone <ton-repo>
-cd fin-agent
+git clone https://github.com/mohamed15032003/NOM-DU-DEPOT.git
+cd NOM-DU-DEPOT
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+venv\Scripts\activate        # Linux / macOS : source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env  # renseigner GROQ_API_KEY
+cp .env.example .env         # puis mettre sa clé GROQ_API_KEY dans .env
+streamlit run streamlit_app.py
 ```
 
-## Ouvrir dans IntelliJ IDEA
+Au premier lancement, l'application indexe automatiquement les rapports de `data/raw/` (environ 1 minute), puis les lancements suivants sont immédiats.
 
-1. **Plugin Python** : Ultimate l'a nativement ; en Community, va dans `Settings > Plugins > Marketplace`, cherche "Python" et installe le plugin (fonctionnalités un peu réduites par rapport à Ultimate/PyCharm, mais suffisant pour ce projet).
-2. `File > Open`, sélectionne le dossier `fin-agent/`.
-3. Crée l'environnement virtuel si ce n'est pas déjà fait (`python -m venv venv` à la racine), puis `File > Project Structure > SDKs > + > Add Python SDK > Existing environment`, pointe vers `venv/bin/python` (ou `venv\Scripts\python.exe` sous Windows).
-4. Clic droit sur `src/` → `Mark Directory as > Sources Root` (pour que les imports `from src....` soient résolus correctement par l'IDE).
-5. Crée des **Run Configurations** (`Run > Edit Configurations > +`) pour aller plus vite :
-   - `Python` : module `src.ingestion.download_samples`
-   - `Python` : module `src.ingestion.indexer`
-   - `Python` : module `src.rag.agent`, arguments = ta question de test
-   - `FastAPI`/`Python` : script `uvicorn`, arguments `src.api.main:app --reload`
-6. Copie `.env.example` en `.env` à la racine — IntelliJ (avec le plugin EnvFile, optionnel) peut le charger automatiquement dans les Run Configurations, sinon exporte les variables manuellement dans ton shell avant de lancer.
-
-## Utilisation
+Autres points d'entrée :
 
 ```bash
-# 1. Déposer des rapports financiers PDF dans data/raw/
-
-# 2. Lancer l'ingestion
-python -m src.ingestion.indexer
-
-# 3. Lancer l'API
-uvicorn src.api.main:app --reload
-
-# 4. (bonus) Lancer le serveur MCP
-python -m src.mcp.server
+python -m src.rag.agent "Quels sont les ratios financiers de Délice Holding ?"   # en ligne de commande
+uvicorn src.api.main:app --reload                                              # API : GET /health, POST /ask
+python -m src.mcp.server                                                        # serveur MCP
 ```
 
-## Roadmap
+## Ce que j'ai appris en le construisant
 
-- **Semaine 1** — Ingestion & données : parsing, chunking, indexation ChromaDB sur 5-10 rapports. ✅ Mécanique validée sur un rapport de test ; téléchargement du modèle d'embeddings et ingestion de vrais rapports BVMT encore à faire (bloqué par le réseau des environnements de dev utilisés jusqu'ici — à tester depuis ta machine).
-- **Semaine 2** — RAG de base : question-réponse fonctionnel via LangChain + Groq. ⏳ Code écrit (`agent.py`, `retriever.py`), **jamais testé avec une vraie clé Groq** — c'est le prochain blocage à lever en priorité, avant de pouvoir valider tout le reste bout en bout.
-- **Semaine 3** — Outils spécialisés + interface : ratios, incohérences, résumé de risques, démo Streamlit/FastAPI. ✅ Ratios et incohérences implémentés et testés (regex, sans dépendre de Groq) ; résumé de risques écrit mais pas testé (dépend de Groq) ; interface de démo pas commencée.
-- **Semaine 4** — Couche MCP, évaluation, déploiement (Render/Railway), README final, post LinkedIn. ✅ Couche MCP implémentée (et un bug d'API v1/v2 du SDK corrigé) ; évaluation, déploiement et post LinkedIn pas commencés.
+- **Un petit document peut être « noyé » par un gros.** Quand le contexte était pré-chargé pour toutes les questions, le rapport de test (2 morceaux) disparaissait derrière celui de Délice (74 morceaux). J'ai retiré ce pré-chargement et ajouté un paramètre `company` aux outils pour cibler un seul rapport.
+- **Les modèles et les SDK bougent vite.** Le modèle Llama 3.3 utilisé au départ a été retiré par Groq en août 2026, et le SDK MCP a renommé sa classe principale entre la v1 et la v2. J'ai dû adapter le code dans les deux cas.
+- **Extraire des chiffres d'un PDF est plus dur qu'il n'y paraît** : espaces dans les nombres, unités, années à ne pas confondre avec des montants, colonnes de l'année précédente… La majeure partie du travail sur les ratios est là.
+- **Déployer, c'est penser au premier lancement.** L'index ChromaDB n'est pas versionné : l'application le reconstruit seule quand il est vide, sans aucune étape manuelle.
 
-## Évaluation
+## Limites et prochaines étapes
 
-Jeu de questions/réponses de référence sur les rapports ingérés (voir `src/evaluation/eval_qa.py`), mesurant :
-- **Retrieval precision** : les bons passages sont-ils récupérés ?
-- **Faithfulness** : la réponse générée est-elle fidèle aux documents sources (pas d'hallucination) ?
+- Le découpage du texte est simple (taille fixe avec chevauchement). Un découpage qui respecte la structure du rapport donnerait de meilleurs passages.
+- L'extraction des chiffres repose sur des règles : un rapport avec une mise en forme inhabituelle peut faire échouer un ratio (l'outil l'indique alors comme « non calculable »).
+- L'évaluation n'est pas encore faite : la prochaine étape est un jeu de questions de référence pour mesurer la qualité de la recherche et la fidélité des réponses aux documents.
+- Seuls deux rapports sont indexés pour l'instant ; l'objectif est d'en ajouter d'autres sociétés cotées à la BVMT.
 
-## Sources de données (vérifiées accessibles)
+---
 
-| Source | Accès | Format | Usage |
-|---|---|---|---|
-| [BVMT — Rapports d'activité](https://www.bvmt.com.tn/fr/rapports-activites) | Public, PDF téléchargeable directement (ex: [rapport 2024](https://www.bvmt.com.tn/sites/default/files/rapports_activites/2024.pdf)) | PDF | Contexte marché tunisien, cas d'usage local |
-| [BVMT — Documents / Rapports annuels de gestion](http://www.bvmt.com.tn/fr/documents/68/711/list) | Public, liste de PDF par société cotée | PDF | Rapports par société, texte pour le RAG |
-| [SEC EDGAR Full-Text Search](https://www.sec.gov/cgi-bin/srqsb?text=...) / [data.sec.gov](https://www.sec.gov/edgar/sec-api-documentation) | 100% gratuit, sans clé API — juste un header `User-Agent` identifiant (ex: `"TonNom ton@email.com"`, exigé par la SEC, pas une authentification payante) | PDF/HTML/JSON | Rapports 10-K/10-Q en anglais, volume important |
-| [SEC Financial Statement Data Sets](https://www.sec.gov/dera/data/financial-statement-data-sets.html) | Gratuit, officiel, jeux de données trimestriels structurés (pas du PDF) | TSV/JSON | Calcul de ratios sans avoir à parser du texte — complète bien les PDF pour la partie "chiffrée" |
-| [Kaggle — Financial Statements datasets](https://www.kaggle.com/datasets?search=financial+statements) | Gratuit, compte Kaggle requis | CSV | Solution de secours si le scraping BVMT/EDGAR bloque en semaine 1 |
-
-`src/ingestion/download_samples.py` télécharge automatiquement quelques documents de test depuis ces sources pour démarrer l'ingestion dès le premier jour, sans attendre d'avoir résolu l'accès aux données.
-
-## Mots-clés
-
-RAG · LLM Agents · LangChain · ChromaDB · Model Context Protocol (MCP) · FastAPI · Financial Document Analysis · Audit Automation
+Projet personnel réalisé par **Mohamed Derbel**, élève ingénieur en ingénierie financière à ESPRIT.
+[LinkedIn](https://www.linkedin.com/in/mohamed-derbel-financial-it-student) · [GitHub](https://github.com/mohamed15032003)
